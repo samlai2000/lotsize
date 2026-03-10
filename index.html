@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CFD 交易風控與點值計算器 (進階版)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 500px; background-color: #1e1e1e; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); overflow: hidden; }
+        .tabs { display: flex; background-color: #2d2d2d; }
+        .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; font-weight: bold; transition: background-color 0.3s; color: #aaa; }
+        .tab:hover { background-color: #3d3d3d; }
+        .tab.active { background-color: #007bff; color: white; border-bottom: 3px solid #0056b3; }
+        .content { padding: 25px; display: none; }
+        .content.active { display: block; }
+        label { display: block; margin-bottom: 8px; font-size: 14px; color: #aaa; }
+        select, input { width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #444; border-radius: 5px; background-color: #2d2d2d; color: white; font-size: 16px; box-sizing: border-box; }
+        select:focus, input:focus { outline: none; border-color: #007bff; }
+        .result-box { background-color: #2a2a2a; padding: 15px; border-radius: 5px; border-left: 4px solid #007bff; margin-top: 10px; }
+        .result-value { font-size: 24px; font-weight: bold; color: #4caf50; margin-top: 5px; }
+        .note { font-size: 12px; color: #888; margin-top: 15px; line-height: 1.5; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('tab1', this)">第一部分：點值查詢</div>
+        <div class="tab" onclick="switchTab('tab2', this)">第二部分：手數計算</div>
+    </div>
+
+    <div id="tab1" class="content active">
+        <label for="instrument1">選擇交易品種 (包含金銀交叉與Crypto)</label>
+        <select id="instrument1" onchange="calculateTab1()"></select>
+
+        <label for="lotsize">輸入下單手數 (Lot Size)</label>
+        <input type="number" id="lotsize" step="0.01" min="0.01" value="0.01" oninput="calculateTab1()">
+
+        <div class="result-box">
+            <div>移動 1 Pip 的帳戶淨值變化 (USD)</div>
+            <div id="pipValueResult" class="result-value">$0.00</div>
+        </div>
+    </div>
+
+    <div id="tab2" class="content">
+        <label for="instrument2">選擇交易品種 (包含金銀交叉與Crypto)</label>
+        <select id="instrument2" onchange="calculateTab2()"></select>
+
+        <label for="balance">帳戶總資金 (Account Balance USD)</label>
+        <input type="number" id="balance" step="100" min="100" value="10000" oninput="calculateTab2()">
+
+        <label style="display:flex; justify-content:space-between;">
+            <span style="width:48%;">我接受虧損 (%)<input type="number" id="riskPercent" step="0.1" min="0.1" value="1.0" oninput="calculateTab2()"></span>
+            <span style="width:48%;">停損點數 (SL Pips)<input type="number" id="slPips" step="1" min="1" value="20" oninput="calculateTab2()"></span>
+        </label>
+
+        <div class="result-box">
+            <div>建議下單手數 (Lot Size)</div>
+            <div id="lotSizeResult" class="result-value">0.00 Lot</div>
+            <div id="riskAmountResult" style="color: #aaa; font-size: 14px; margin-top: 5px;">風險金額: $0.00</div>
+        </div>
+    </div>
+    
+    <div style="padding: 0 25px 20px 25px;">
+        <p class="note">
+            * <strong>黃金交叉盤預設：</strong> 1標準手=100oz。XAUJPY 1Pip=1.00 (價值約 $0.66)；XAUAUD 1Pip=0.01 (價值約 $0.65)；XAUEUR 1Pip=0.01 (價值約 $1.08)。<br>
+            * <strong>加密貨幣預設：</strong> 1標準手=1顆幣。BTC/ETH 皆假設 1 Pip=$1.00 的報價跳動。此為基準值，請務必依您的券商規格調整認知。<br>
+            * 交叉盤點值基於靜態概算匯率，實盤會有微小浮動，作為風控防線已足夠精確。
+        </p>
+    </div>
+</div>
+
+<script>
+    const pipValuesPerLot = {
+        // 直盤 USD 計價
+        "EURUSD": 10, "GBPUSD": 10, "AUDUSD": 10, "NZDUSD": 10,
+        // 貴金屬 (USD)
+        "XAUUSD (黃金)": 1,   
+        "XAGUSD (白銀)": 50,  
+        // 貴金屬交叉盤
+        "XAUJPY (黃金/日圓)": 0.66, // 100 JPY / 150 (USDJPY)
+        "XAUAUD (黃金/澳幣)": 0.65, // 1 AUD * 0.65 (AUDUSD)
+        "XAUEUR (黃金/歐元)": 1.08, // 1 EUR * 1.08 (EURUSD)
+        // 加密貨幣 (1 Lot = 1 Coin, 1 Pip = $1.00)
+        "BTCUSD (比特幣)": 1, 
+        "ETHUSD (以太幣)": 1, 
+        // JPY 交叉盤
+        "USDJPY": 6.66, "EURJPY": 6.66, "GBPJPY": 6.66, "AUDJPY": 6.66, "NZDJPY": 6.66, "CADJPY": 6.66, "CHFJPY": 6.66,
+        // CHF 交叉盤
+        "USDCHF": 11.36, "EURCHF": 11.36, "GBPCHF": 11.36, "AUDCHF": 11.36, "NZDCHF": 11.36, "CADCHF": 11.36,
+        // CAD 交叉盤
+        "USDCAD": 7.40, "EURCAD": 7.40, "GBPCAD": 7.40, "AUDCAD": 7.40, "NZDCAD": 7.40,
+        // GBP 交叉盤
+        "EURGBP": 12.60,
+        // AUD 交叉盤
+        "EURAUD": 6.50, "GBPAUD": 6.50,
+        // NZD 交叉盤
+        "EURNZD": 6.00, "GBPNZD": 6.00, "AUDNZD": 6.00
+    };
+
+    const symbols = Object.keys(pipValuesPerLot);
+
+    function init() {
+        const select1 = document.getElementById('instrument1');
+        const select2 = document.getElementById('instrument2');
+        
+        symbols.forEach(symbol => {
+            select1.add(new Option(symbol, symbol));
+            select2.add(new Option(symbol, symbol));
+        });
+        calculateTab1();
+        calculateTab2();
+    }
+
+    function switchTab(tabId, element) {
+        document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        element.classList.add('active');
+    }
+
+    function calculateTab1() {
+        const symbol = document.getElementById('instrument1').value;
+        const lots = parseFloat(document.getElementById('lotsize').value) || 0;
+        const baseValue = pipValuesPerLot[symbol];
+        
+        const pipValue = baseValue * lots;
+        document.getElementById('pipValueResult').innerText = "$" + pipValue.toFixed(2);
+    }
+
+    function calculateTab2() {
+        const symbol = document.getElementById('instrument2').value;
+        const balance = parseFloat(document.getElementById('balance').value) || 0;
+        const riskPct = parseFloat(document.getElementById('riskPercent').value) || 0;
+        const slPips = parseFloat(document.getElementById('slPips').value) || 0;
+        
+        const baseValue = pipValuesPerLot[symbol]; 
+        
+        if (balance > 0 && riskPct > 0 && slPips > 0) {
+            const riskAmount = balance * (riskPct / 100);
+            let lotSize = riskAmount / (slPips * baseValue);
+            
+            lotSize = Math.floor(lotSize * 100) / 100;
+            
+            if (lotSize < 0.01) lotSize = 0; 
+            
+            document.getElementById('lotSizeResult').innerText = lotSize.toFixed(2) + " Lot";
+            document.getElementById('riskAmountResult').innerText = "風險金額: $" + riskAmount.toFixed(2);
+        } else {
+            document.getElementById('lotSizeResult').innerText = "0.00 Lot";
+            document.getElementById('riskAmountResult').innerText = "風險金額: $0.00";
+        }
+    }
+
+    window.onload = init;
+</script>
+
+</body>
+</html>
